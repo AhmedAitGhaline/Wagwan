@@ -1,0 +1,30 @@
+[functions.whatsapp-webhook]
+verify_jwt = false
+
+[functions.whatsapp-order-confirmation]
+verify_jwt = false
+
+[functions.wagwan-order-email]
+verify_jwt = false
+
+[functions.sendit-webhook]
+verify_jwt = false
+
+[functions.sendit-create-delivery]
+verify_jwt = true
+
+[functions.sendit-districts]
+verify_jwt = true
+
+[functions.sendit-pickup-cities]
+verify_jwt = true
+
+[functions.sendit-packagings]
+verify_jwt = true
+
+[functions.sendit-refresh-delivery]
+verify_jwt = true
+
+
+[functions.sendit-connection-status]
+verify_jwt = true

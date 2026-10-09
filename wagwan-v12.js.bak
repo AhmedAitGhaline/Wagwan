@@ -1,0 +1,144 @@
+/* WAGWAN V12 client enhancements: unique analytics, cart/checkout leads, coupons, loyalty. */
+(function(){
+  const configured=()=>!!(window.wagwanSB&&window.WAGWAN_SUPABASE_URL&&!String(window.WAGWAN_SUPABASE_URL).startsWith('YOUR_'));
+  const sb=()=>window.wagwanSB;
+  const VID_KEY='wagwan_visitor_id';
+  const SID_KEY='wagwan_session_id';
+  const safeJSON=(v,f)=>{try{return JSON.parse(v)}catch{return f}};
+  const visitorId=()=>{let v=localStorage.getItem(VID_KEY);if(!v){v='V_'+crypto.randomUUID().replace(/-/g,'');localStorage.setItem(VID_KEY,v)}return v};
+  const sessionId=()=>{let v=sessionStorage.getItem(SID_KEY);if(!v){v='S_'+crypto.randomUUID().replace(/-/g,'');sessionStorage.setItem(SID_KEY,v)}return v};
+  const vid=visitorId(),sid=sessionId();
+  const eventKey=(type,product)=> type==='product_view'?`${vid}:product_view:${product}`:type==='add_to_cart'?`${vid}:add_to_cart`:type==='visit'?`${vid}:visit`:`${vid}:${type}:${Date.now()}`;
+  async function track(type,product=null,metadata={}){
+    if(!configured())return;
+    try{
+      if(type==='visit'){
+        await sb().from('analytics_visitors').upsert({visitor_id:vid,last_seen_at:new Date().toISOString()},{onConflict:'visitor_id'});
+      }
+      await sb().from('analytics_events').upsert({visitor_id:vid,event_type:type,product_id:product||null,event_key:eventKey(type,product),session_id:sid,metadata},{onConflict:'event_key',ignoreDuplicates:true});
+    }catch(e){console.debug('[WAGWAN analytics]',e)}
+  }
+  async function saveCart(){
+    if(!configured())return;
+    const cart=safeJSON(localStorage.getItem('wagwan_cart')||'[]',[]);
+    const products=window.getProducts?window.getProducts():[];
+    const items=cart.map(x=>({product_id:x.id,size:x.size,quantity:Number(x.qty)||1}));
+    const subtotal=cart.reduce((s,x)=>{const p=products.find(p=>p.id===x.id);return s+(p?Number(p.price)*Number(x.qty||1):0)},0);
+    try{await sb().rpc('save_cart_session',{p_visitor_id:vid,p_cart_items:items,p_subtotal:subtotal})}catch(e){console.debug('[WAGWAN cart]',e)}
+  }
+  async function startCheckoutLead(){
+    const form=document.getElementById('checkout-form');if(!form||!configured())return;
+    const data=Object.fromEntries(new FormData(form));
+    if(!String(data.phone||'').trim())return;
+    const cart=safeJSON(localStorage.getItem('wagwan_cart')||'[]',[]);const products=window.getProducts?window.getProducts():[];
+    const items=cart.map(x=>({product_id:x.id,size:x.size,quantity:Number(x.qty)||1}));
+    const subtotal=cart.reduce((s,x)=>{const p=products.find(p=>p.id===x.id);return s+(p?Number(p.price)*Number(x.qty||1):0)},0);
+    try{
+      await sb().from('analytics_events').upsert({visitor_id:vid,event_type:'checkout_started',event_key:`${vid}:checkout_started`,session_id:sid,metadata:{subtotal}},{onConflict:'event_key',ignoreDuplicates:true});
+      await sb().rpc('save_checkout_lead',{p_visitor_id:vid,p_phone:String(data.phone).trim(),p_email:String(data.email||'').trim(),p_first_name:String(data.firstName||'').trim(),p_last_name:String(data.lastName||'').trim(),p_address:String(data.address||'').trim(),p_city:String(data.city||'').trim(),p_cart_items:items,p_subtotal:subtotal});
+    }catch(e){console.debug('[WAGWAN checkout lead]',e)}
+  }
+  async function applyCoupon(code){
+    const el=document.getElementById('coupon-message');if(el)el.textContent='Checking...';
+    if(!configured()){if(el)el.textContent='Supabase is not configured.';return null}
+    const {data,error}=await sb().from('coupons').select('*').eq('code',String(code||'').trim().toUpperCase()).eq('is_active',true).maybeSingle();
+    if(error||!data){if(el)el.textContent='Invalid or expired coupon.';return null}
+    if(data.expires_at&&new Date(data.expires_at)<=new Date()){if(el)el.textContent='This coupon has expired.';return null}
+    if(data.max_uses!=null&&data.uses_count>=data.max_uses){if(el)el.textContent='This coupon has reached its maximum uses.';return null}
+    const subtotal=window.totals?window.totals().subtotal:0;
+    if(subtotal<Number(data.minimum_order||0)){if(el)el.textContent=`Minimum order: ${Number(data.minimum_order)} DH`;return null}
+    let discount=Math.round(subtotal*Number(data.discount_percent)/100*100)/100;if(data.maximum_discount!=null)discount=Math.min(discount,Number(data.maximum_discount));
+    localStorage.setItem('wagwan_coupon',JSON.stringify({code:data.code,discountPercent:Number(data.discount_percent),discount,expiresAt:data.expires_at}));
+    if(el)el.textContent=`${data.code} applied — -${discount.toFixed(2)} DH`;
+    renderCheckoutEnhancement();return data;
+  }
+  async function loadPoints(phone){
+    if(!configured()||!phone)return 0;try{const {data}=await sb().rpc('get_loyalty_balance',{p_phone:String(phone).trim()});return Number(data?.points||0)}catch{return 0}
+  }
+  async function renderCheckoutEnhancement(){
+    const summary=document.getElementById('checkout-summary');if(!summary)return;
+    let box=document.getElementById('v12-checkout-box');
+    if(!box){box=document.createElement('div');box.id='v12-checkout-box';box.className='v12-checkout-box';summary.appendChild(box)}
+    const coupon=safeJSON(localStorage.getItem('wagwan_coupon')||'null',null);
+    const phone=document.querySelector('#checkout-form input[name="phone"]')?.value||'';
+    const points=phone?await loadPoints(phone):0;
+    const subtotal=window.totals?window.totals().subtotal:0;
+    const couponDiscount=coupon&&coupon.discount?Number(coupon.discount):0;
+    const usable=Math.floor(Math.max(0,Math.min(points,subtotal-couponDiscount))/5)*5;
+    const current=Number(localStorage.getItem('wagwan_loyalty_use')||0);const use=Math.min(current,usable);
+    localStorage.setItem('wagwan_loyalty_use',String(use));
+    const totalAfter=Math.max(0,subtotal-couponDiscount-use); box.innerHTML=`<div class="v12-box-section"><b>PROMO CODE</b><div class="v12-inline"><input id="coupon-input" value="${coupon?.code||''}" placeholder="WAGWAN10"><button type="button" class="btn black" id="coupon-apply">APPLY</button></div><small id="coupon-message">${coupon?`${coupon.code} applied — -${Number(coupon.discount).toFixed(2)} DH`:''}</small></div><div class="v12-box-section"><b>WAGWAN POINTS</b><p>You have <strong>${points}</strong> points · 5 points = 5 DH</p>${points>=5?`<label class="v12-check"><input type="checkbox" id="loyalty-use" ${use>0?'checked':''}> Use ${usable} points for <strong>${usable} DH</strong> off</label>`:'<small>Points are earned after a delivered order.</small>'}</div><div class="v12-box-section"><div class="summary-line"><span>DISCOUNT</span><b>- ${((couponDiscount||0)+use).toFixed(2)} DH</b></div><div class="summary-line total"><span>ESTIMATED TOTAL</span><b>${totalAfter.toFixed(2)} DH</b></div></div>`;
+    box.querySelector('#coupon-apply')?.addEventListener('click',()=>applyCoupon(box.querySelector('#coupon-input').value));
+    box.querySelector('#loyalty-use')?.addEventListener('change',e=>{localStorage.setItem('wagwan_loyalty_use',e.target.checked?String(usable):'0');renderCheckoutEnhancement()});
+  }
+  function patchAddToCart(){
+    if(window._wagwanV12AddPatched||typeof window.addToCart!=='function')return;
+    const original=window.addToCart;window.addToCart=function(id,size='M',qty=1){const ok=original.apply(this,arguments);if(ok){track('add_to_cart',null,{product_id:id,size,quantity:Number(qty)||1});saveCart()}return ok};window._wagwanV12AddPatched=true;
+  }
+  function patchProductView(){
+    const id=new URLSearchParams(location.search).get('product');if(id)track('product_view',id,{source:'product_page'});
+    document.addEventListener('click',e=>{const a=e.target.closest('a[href*="product.html?product="]');if(!a)return;const m=new URL(a.href,location.href).searchParams.get('product');if(m)track('product_view',m,{source:'product_link'})},{capture:true});
+  }
+  function patchCheckoutForm(){
+    const form=document.getElementById('checkout-form');if(!form||form.dataset.v12Bound)return;
+    form.dataset.v12Bound='1';
+    ['input','change'].forEach(evt=>form.addEventListener(evt,()=>{clearTimeout(form._v12Timer);form._v12Timer=setTimeout(()=>{startCheckoutLead();renderCheckoutEnhancement()},500)}));
+    const clone=form.cloneNode(true);form.replaceWith(clone);clone.dataset.v12Bound='1';
+    clone.addEventListener('submit',submitV12Order);
+    setTimeout(renderCheckoutEnhancement,100);
+  }
+  async function submitV12Order(e){
+    e.preventDefault();
+    const form=e.currentTarget,data=Object.fromEntries(new FormData(form)),err=document.getElementById('checkout-error');if(err)err.textContent='';
+    const normalize=window.normalizeMoroccanPhone||((x)=>x);const phone=normalize(data.phone);const cart=safeJSON(localStorage.getItem('wagwan_cart')||'[]',[]);
+    if(!phone){if(err)err.textContent='Numéro marocain invalide.';return}if(!cart.length){if(err)err.textContent='Your cart is empty.';return}
+    const coupon=safeJSON(localStorage.getItem('wagwan_coupon')||'null',null);const points=Number(localStorage.getItem('wagwan_loyalty_use')||0);
+    const items=cart.map(x=>({product_id:x.id,size:x.size,quantity:Number(x.qty)}));
+    try{
+      if(configured()){
+        const {data:result,error}=await sb().rpc('create_cod_order',{p_first_name:data.firstName,p_last_name:data.lastName,p_phone:phone,p_email:String(data.email||'').trim().toLowerCase(),p_address:data.address,p_city:data.city,p_items:items,p_coupon_code:coupon?.code||null,p_loyalty_points:points,p_visitor_id:vid});
+        if(error)throw error;
+        localStorage.removeItem('wagwan_cart');localStorage.removeItem('wagwan_coupon');localStorage.removeItem('wagwan_loyalty_use');
+        if(window.loadCatalog)await window.loadCatalog();location.href='order-success.html?order=WG-'+String(result.order_number).padStart(4,'0');
+      }else{if(err)err.textContent='Supabase is not configured yet.'}
+    }catch(ex){console.error(ex);if(err)err.textContent=ex.message||'Unable to place the order. Please try again.'}
+  }
+  function init(){
+    track('visit');
+    patchAddToCart();patchProductView();saveCart();
+    if(document.getElementById('checkout-form'))patchCheckoutForm();
+    window.addEventListener('hashchange',()=>{if(location.hash==='#analytics'||location.hash==='#coupons'||location.hash==='#loyalty'||location.hash==='#abandoned-carts')setTimeout(renderAdminV12,50)});
+    if(document.querySelector('.admin-body'))setTimeout(renderAdminV12,200);
+  }
+  window.wagwanV12={track,saveCart,applyCoupon,loadPoints,renderCheckoutEnhancement,renderAdminV12:()=>renderAdminV12()};
+  document.addEventListener('DOMContentLoaded',init);
+
+  let v12Channel=null;
+  async function renderAdminV12(){
+    const admin=document.querySelector('.admin-body');if(!admin||!configured())return;
+    const nav=document.querySelector('.admin-sidebar nav');if(nav&&!document.getElementById('v12-nav-analytics')){
+      const sep=document.createElement('div');sep.className='v12-nav-sep';nav.appendChild(sep);
+      [
+        ['analytics','Analytics',`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V9m8 10V5m8 14v-7"/><path d="M2.5 19.5h19"/></svg>`],
+        ['abandoned-carts','Abandoned Carts',`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14l-1 12H6L5 5Z"/><path d="M9 5a3 3 0 0 1 6 0"/><circle cx="9" cy="20" r="1"/><circle cx="16" cy="20" r="1"/></svg>`],
+        ['coupons','Coupons',`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v3a2 2 0 1 0 0 4v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-3a2 2 0 1 0 0-4V7Z"/><path d="M9 9l6 6m0-6h.01M9 15h.01"/></svg>`],
+        ['loyalty','Loyalty',`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1-4.4-4.3 6.1-.9L12 3Z"/></svg>`]
+      ].forEach(([id,label,icon])=>{const a=document.createElement('a');a.href='#'+id;a.dataset.section=id;a.id='v12-nav-'+id;a.title=label;a.innerHTML=`<span class="nav-icon v12-svg-icon">${icon}</span><span>${label}</span>`;nav.appendChild(a)});
+      document.addEventListener('click',e=>{const a=e.target.closest('a[data-section^="analytics"],a[data-section="abandoned-carts"],a[data-section="coupons"],a[data-section="loyalty"]');if(a)setTimeout(()=>{document.querySelectorAll('.admin-section').forEach(s=>s.classList.toggle('section-active','#'+s.id===location.hash));renderAdminV12()},30)});
+    }
+    const main=document.querySelector('.admin-content');if(!main)return;
+    if(!document.getElementById('analytics'))main.insertAdjacentHTML('beforeend',`<section class="admin-section" id="analytics"><div class="admin-title"><div><h1>Analytics</h1><p>Unique visitor, product interest and conversion analytics.</p></div><span class="v12-live-pill"><i></i> LIVE</span></div><div class="v12-kpis" id="v12-analytics-kpis"></div><div class="v12-grid"><div class="panel"><div class="panel-head"><h2>Conversion Funnel</h2></div><div id="v12-funnel" class="v12-funnel"></div></div><div class="panel"><div class="panel-head"><h2>Product Views</h2></div><div id="v12-product-views"></div></div></div></section>`);
+    if(!document.getElementById('abandoned-carts'))main.insertAdjacentHTML('beforeend',`<section class="admin-section" id="abandoned-carts"><div class="admin-title"><div><h1>Abandoned Carts</h1><p>Anonymous carts and recoverable checkout leads.</p></div></div><div class="v12-kpis" id="v12-abandoned-kpis"></div><div class="panel"><div class="panel-head"><h2>Checkout Leads</h2></div><div class="table-wrap"><table class="v12-table"><thead><tr><th>Client</th><th>Phone</th><th>Cart</th><th>Value</th><th>Status</th><th>Last activity</th></tr></thead><tbody id="v12-leads"></tbody></table></div></div></section>`);
+    if(!document.getElementById('coupons'))main.insertAdjacentHTML('beforeend',`<section class="admin-section" id="coupons"><div class="admin-title"><div><h1>Coupons</h1><p>Create discount codes and track their revenue.</p></div></div><div class="v12-coupon-layout"><div class="panel"><div class="panel-head"><h2>Create Coupon</h2></div><form id="v12-coupon-form" class="v12-form"><input name="code" placeholder="WAGWAN10" required><input name="discount" type="number" min="0.01" max="100" step="0.01" placeholder="Discount %" required><input name="maxUses" type="number" min="1" placeholder="Maximum uses"><input name="expires" type="datetime-local"><input name="minimum" type="number" min="0" step="0.01" placeholder="Minimum order DH"><input name="maximum" type="number" min="0" step="0.01" placeholder="Maximum discount DH"><input name="commission" type="number" min="0" max="100" step="0.01" placeholder="Commission %"><button class="btn black" type="submit">CREATE COUPON</button></form></div><div class="panel"><div class="panel-head"><h2>Coupon Performance</h2></div><div id="v12-coupons-list"></div></div></div></section>`);
+    if(!document.getElementById('loyalty'))main.insertAdjacentHTML('beforeend',`<section class="admin-section" id="loyalty"><div class="admin-title"><div><h1>WAGWAN Loyalty</h1><p>1 delivered order = 5 points · 5 points = 5 DH.</p></div></div><div class="v12-kpis" id="v12-loyalty-kpis"></div><div class="panel"><div class="panel-head"><h2>Loyalty Accounts</h2></div><div class="table-wrap"><table class="v12-table"><thead><tr><th>Customer</th><th>Phone</th><th>Points</th><th>Lifetime earned</th><th>Redeemed</th></tr></thead><tbody id="v12-loyalty-list"></tbody></table></div></div></section>`);
+    if(!v12Channel){v12Channel=sb().channel('wagwan-v12-realtime').on('postgres_changes',{event:'*',schema:'public',table:'analytics_visitors'},()=>loadAnalytics()).on('postgres_changes',{event:'*',schema:'public',table:'analytics_events'},()=>loadAnalytics()).on('postgres_changes',{event:'*',schema:'public',table:'coupon_usages'},()=>loadCoupons()).on('postgres_changes',{event:'*',schema:'public',table:'coupons'},()=>loadCoupons()).on('postgres_changes',{event:'*',schema:'public',table:'loyalty_accounts'},()=>loadLoyalty()).on('postgres_changes',{event:'*',schema:'public',table:'checkout_leads'},()=>loadAbandoned()).on('postgres_changes',{event:'*',schema:'public',table:'wagwan_cart_sessions'},()=>loadAbandoned()).subscribe()}
+    await Promise.all([loadAnalytics(),loadAbandoned(),loadCoupons(),loadLoyalty()]);
+    if(document.getElementById('v12-coupon-form')&&!document.getElementById('v12-coupon-form').dataset.bound){document.getElementById('v12-coupon-form').dataset.bound='1';document.getElementById('v12-coupon-form').addEventListener('submit',createCoupon)}
+    document.querySelectorAll('.admin-section').forEach(s=>s.classList.toggle('section-active','#'+s.id===location.hash));
+  }
+  async function loadAnalytics(){if(!configured())return;const [{data:v},{data:e}]=await Promise.all([sb().from('analytics_visitors').select('visitor_id'),sb().from('analytics_events').select('event_type,product_id,created_at,metadata')]);const ev=e||[];const unique=v?.length||0;const count=t=>ev.filter(x=>x.event_type===t).length;const orders=count('order_created');const pv=count('product_view');const cart=count('add_to_cart');const checkout=count('checkout_started');const rate=unique?orders/unique*100:0;const k=document.getElementById('v12-analytics-kpis');if(k)k.innerHTML=[['UNIQUE VISITORS',unique],['PRODUCT VIEWERS',pv],['ADD TO CART',cart],['CHECKOUT STARTED',checkout],['ORDERS',orders],['CONVERSION RATE',rate.toFixed(2)+'%']].map(x=>`<div class="stat"><div class="stat-top"><span>${x[0]}</span><span class="stat-icon">◈</span></div><div class="stat-value">${x[1]}</div><span class="trend">Live</span></div>`).join('');const funnel=document.getElementById('v12-funnel');if(funnel)funnel.innerHTML=[['Unique Visitors',unique],['Product Viewers',pv],['Add to Cart',cart],['Checkout Started',checkout],['Orders',orders]].map((x,i)=>`<div class="v12-funnel-row"><b>${x[0]}</b><span>${x[1]}</span><div><i style="width:${unique?Math.min(100,x[1]/unique*100):0}%"></i></div></div>`).join('');const pvEl=document.getElementById('v12-product-views');if(pvEl){const map={};ev.filter(x=>x.event_type==='product_view').forEach(x=>{map[x.product_id]=(map[x.product_id]||0)+1});const ps=window.getProducts?window.getProducts():[];pvEl.innerHTML=Object.entries(map).sort((a,b)=>b[1]-a[1]).map(([id,n])=>`<div class="v12-rank"><span>${ps.find(p=>p.id===id)?.name||id}</span><b>${n}</b></div>`).join('')||'<div class="empty">No product views yet.</div>'}}
+  async function loadAbandoned(){if(!configured())return;const [{data:c},{data:l}]=await Promise.all([sb().from('wagwan_cart_sessions').select('*').eq('status','active').order('last_activity_at',{ascending:false}),sb().from('checkout_leads').select('*').in('status',['active','abandoned']).order('last_activity_at',{ascending:false})]);const carts=c||[],leads=l||[];const k=document.getElementById('v12-abandoned-kpis');if(k)k.innerHTML=[['ACTIVE CARTS',carts.length],['RECOVERABLE CHECKOUTS',leads.length],['CART VALUE',carts.reduce((s,x)=>s+Number(x.subtotal||0),0).toFixed(2)+' DH']].map(x=>`<div class="stat"><div class="stat-top"><span>${x[0]}</span></div><div class="stat-value">${x[1]}</div></div>`).join('');const body=document.getElementById('v12-leads');if(body)body.innerHTML=leads.length?leads.map(x=>`<tr><td>${x.first_name||''} ${x.last_name||''}</td><td>${x.phone}</td><td>${(x.cart_items||[]).length} item(s)</td><td>${Number(x.subtotal||0).toFixed(2)} DH</td><td>${x.status}</td><td>${new Date(x.last_activity_at).toLocaleString('fr-FR')}</td></tr>`).join(''):'<tr><td colspan="6" class="empty">No recoverable checkout leads.</td></tr>'}
+  async function loadCoupons(){if(!configured())return;const {data,error}=await sb().from('coupon_analytics').select('*').order('created_at',{ascending:false});if(error)return;const el=document.getElementById('v12-coupons-list');if(el)el.innerHTML=(data||[]).map(x=>`<div class="v12-coupon-row"><div><b>${x.code}</b><small>${x.discount_percent}% · ${x.uses_count}${x.max_uses?' / '+x.max_uses:''} uses</small></div><strong>${Number(x.revenue_from_coupon_orders||0).toFixed(2)} DH</strong><span>Commission ${Number(x.commission||0).toFixed(2)} DH</span></div>`).join('')||'<div class="empty">No coupons yet.</div>'}
+  async function createCoupon(e){e.preventDefault();const f=e.currentTarget,d=Object.fromEntries(new FormData(f));const {error}=await sb().from('coupons').insert({code:String(d.code).trim().toUpperCase(),discount_percent:Number(d.discount),max_uses:d.maxUses?Number(d.maxUses):null,expires_at:d.expires?new Date(d.expires).toISOString():null,minimum_order:Number(d.minimum||0),maximum_discount:d.maximum?Number(d.maximum):null,commission_percent:Number(d.commission||0)});if(error){toast(error.message||'Could not create coupon');return}f.reset();await loadCoupons();toast('Coupon created')}
+  async function loadLoyalty(){if(!configured())return;const {data}=await sb().from('loyalty_accounts').select('*').order('points_balance',{ascending:false});const rows=data||[];const k=document.getElementById('v12-loyalty-kpis');if(k)k.innerHTML=[['LOYALTY MEMBERS',rows.length],['POINTS IN CIRCULATION',rows.reduce((s,x)=>s+x.points_balance,0)],['POINTS EARNED',rows.reduce((s,x)=>s+x.lifetime_earned,0)],['POINTS REDEEMED',rows.reduce((s,x)=>s+x.lifetime_redeemed,0)]].map(x=>`<div class="stat"><div class="stat-top"><span>${x[0]}</span></div><div class="stat-value">${x[1]}</div></div>`).join('');const el=document.getElementById('v12-loyalty-list');if(el)el.innerHTML=rows.length?rows.map(x=>`<tr><td>${x.full_name||'—'}</td><td>${x.phone}</td><td><b>${x.points_balance}</b> (${x.points_balance} DH)</td><td>${x.lifetime_earned}</td><td>${x.lifetime_redeemed}</td></tr>`).join(''):'<tr><td colspan="5" class="empty">No loyalty accounts yet.</td></tr>'}
+})();

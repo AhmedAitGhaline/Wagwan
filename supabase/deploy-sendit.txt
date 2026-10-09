@@ -1,0 +1,22 @@
+SENDIT EDGE FUNCTIONS
+
+Deploy these functions from the Supabase Dashboard or CLI:
+
+sendit-create-delivery
+sendit-districts
+sendit-pickup-cities
+sendit-packagings
+sendit-refresh-delivery
+sendit-refresh-all
+sendit-webhook
+
+IMPORTANT:
+- sendit-webhook must have Verify JWT disabled.
+- The other Sendit functions require an authenticated WAGWAN admin.
+- Required secrets:
+  SENDIT_PUBLIC_KEY
+  SENDIT_SECRET_KEY
+  SENDIT_WEBHOOK_SIGNING_KEY
+  SENDIT_BASE_URL (optional; defaults to https://app.sendit.ma/api/v1)
+
+The Shipping page Refresh button calls sendit-refresh-all. It re-queries Sendit for every saved shipment, updates local shipment status, records a tracking event when the status changed, and marks the WAGWAN order delivered when Sendit reports DELIVERED.

@@ -1,0 +1,5 @@
+WAGWAN COMMUNITY PHOTO FIX — REQUIRED SUPABASE SETUP
+
+The storefront uses getPublicUrl() for approved community outfit images. In Supabase, open Storage > Buckets > review-photos and enable Public bucket so the generated URLs can display in the storefront and admin preview. The upload policy still needs INSERT permission. Public buckets mean anyone who obtains an object URL can view that image, so only upload customer photos that the customer has consented to share.
+
+This ZIP also adds smaller outfit cards and admin thumbnails, clearer moderation errors, and includes pending outfit photos in the Feedback navigation badge.
