@@ -5,10 +5,10 @@ const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelect
 const sb=()=>window.wagwanSB;
 const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=n=>`${Number(n||0).toLocaleString('fr-FR')} DH`;
-const defaults={instagram_url:'',tiktok_url:'',whatsapp_sticky_phone:'212618175188',social_feed_enabled:false,bundle_enabled:true,bundle_qty:2,bundle_discount_percent:10,free_shipping_threshold:0,loyalty_photo_review_points:5};
+const defaults={instagram_url:'',tiktok_url:'',whatsapp_sticky_phone:'212618175188',social_feed_enabled:false,bundle_enabled:true,bundle_qty:2,bundle_discount_percent:10,free_shipping_threshold:0,loyalty_photo_review_points:5,drop_mode_enabled:false,drop_name:'DROP 002',drop_launch_at:null,drop_timezone:'Africa/Casablanca',drop_registration_open:true,drop_auto_close_registrations:true,active_drop_id:null};
 let settings={...defaults};
 async function loadSettings(){let remote=null;try{if(sb()){const {data}=await sb().from('wagwan_store_settings').select('*').eq('id',1).maybeSingle();if(data){remote=data;settings={...defaults,...data};}}}catch(e){console.warn('[WAGWAN Growth] Settings unavailable; using defaults.',e)}
- try{const local=JSON.parse(localStorage.getItem('wagwan_growth_settings')||'{}');settings={...settings,...local};if(remote){settings.instagram_url=remote.instagram_url||'';settings.tiktok_url=remote.tiktok_url||'';settings.whatsapp_sticky_phone=remote.whatsapp_sticky_phone||defaults.whatsapp_sticky_phone;}}catch{}
+ try{const local=JSON.parse(localStorage.getItem('wagwan_growth_settings')||'{}');settings={...settings,...local};if(remote){settings.instagram_url=remote.instagram_url||'';settings.tiktok_url=remote.tiktok_url||'';settings.whatsapp_sticky_phone=remote.whatsapp_sticky_phone||defaults.whatsapp_sticky_phone;for(const k of ['drop_mode_enabled','drop_name','drop_launch_at','drop_timezone','drop_registration_open','drop_auto_close_registrations','active_drop_id'])settings[k]=remote[k]??defaults[k];}}catch{}
  renderSocial();renderStickyWhatsApp();renderThreshold();}
 function normalizeMoroccanWhatsAppPhone(value){let digits=String(value||'').trim().replace(/[\s().-]/g,'');if(digits.startsWith('+'))digits=digits.slice(1);digits=digits.replace(/\D/g,'');if(digits.startsWith('00'))digits=digits.slice(2);if(/^0[67]\d{8}$/.test(digits))digits='212'+digits.slice(1);else if(/^[67]\d{8}$/.test(digits))digits='212'+digits;return /^212[67]\d{8}$/.test(digits)?digits:null}
 function renderStickyWhatsApp(){const phone=normalizeMoroccanWhatsAppPhone(settings.whatsapp_sticky_phone)||defaults.whatsapp_sticky_phone;$$('.wagwan-whatsapp').forEach(link=>{link.href='https://wa.me/'+phone;link.setAttribute('aria-label','Contact WAGWAN sur WhatsApp');link.target='_blank';link.rel='noopener noreferrer';});}
@@ -27,6 +27,127 @@ window.wagwanShowFeedbackThanks=()=>communityThankYou('Thank you for your feedba
 function photoReviewPage(){const root=$('#photo-review-root');if(!root)return;const onHomepage=!!root.closest('.home-outfit-community');root.innerHTML=`${onHomepage?'':`<div class="photo-submit-hero"><span class="track-eyebrow">WAGWAN / COMMUNITY</span><h1>Partagez votre outfit.</h1><p>Montrez comment vous portez votre WAGWAN. Après validation, votre photo pourra rejoindre notre galerie communautaire et vous rapporter ${Number(settings.loyalty_photo_review_points)||5} points.</p></div>`}<form id="photo-review-form" class="growth-form photo-submit-form"><label>Votre nom<input name="name" maxlength="80" required placeholder="Nom affiché avec la photo"></label><label>Téléphone associé à votre fidélité <span>(facultatif)</span><input name="phone" placeholder="06… ou 6…"></label><label>Produit porté<select name="product" required><option value="taste">TASTE LONGSLEEVE</option><option value="luck">IT'S NEVER LUCK LONGSLEEVE</option></select></label><label class="photo-upload-label">Votre photo<input name="photo" type="file" accept="image/jpeg,image/png,image/webp" required><small>JPG, PNG ou WEBP · 5 Mo maximum</small></label><button>PARTAGER MON OUTFIT <span>→</span></button><p class="growth-result" aria-live="polite"></p></form>`;$('#photo-review-form').addEventListener('submit',async e=>{e.preventDefault();const f=e.currentTarget,d=new FormData(f),m=$('.growth-result',f),file=d.get('photo');if(!file||file.size>5*1024*1024){m.textContent='Choisissez une photo de 5 Mo maximum.';return}try{if(!sb())throw Error('Supabase indisponible');const ext=(file.name.split('.').pop()||'jpg').toLowerCase();const path=`photo-reviews/${Date.now()}-${crypto.randomUUID()}.${ext}`;const up=await sb().storage.from('review-photos').upload(path,file,{upsert:false,contentType:file.type});if(up.error)throw up.error;const url=sb().storage.from('review-photos').getPublicUrl(path).data.publicUrl;const products={taste:'TASTE LONGSLEEVE',luck:"IT'S NEVER LUCK LONGSLEEVE"};let phone=String(d.get('phone')||'').trim().replace(/[\s().-]/g,'');if(/^0[67]\d{8}$/.test(phone))phone='+212'+phone.slice(1);else if(/^[67]\d{8}$/.test(phone))phone='+212'+phone;else if(/^212[67]\d{8}$/.test(phone))phone='+'+phone;if(phone&&!/^\+212[67]\d{8}$/.test(phone))throw Error('Numéro marocain invalide');const {error}=await sb().from('wagwan_photo_reviews').insert({customer_name:String(d.get('name')).trim(),phone:phone||null,product_id:d.get('product'),product_name:products[d.get('product')],photo_url:url,status:'pending',points_awarded:false});if(error)throw error;f.reset();m.textContent='';communityThankYou('Merci pour votre outfit !','Votre photo a bien été envoyée. Après approbation, 5 points seront crédités au numéro de fidélité renseigné.')}catch(err){console.error(err);m.textContent=err.message==='Numéro marocain invalide'?'Numéro invalide. Utilisez 0612345678 ou 612345678.':'Envoi impossible. Vérifiez la migration Supabase et le bucket review-photos.'}})}
 function affiliatePage(){if(!location.pathname.endsWith('affiliate.html'))return;const root=$('#affiliate-root');if(!root)return;root.innerHTML=`<h1>Espace influenceur</h1><p>Consultez vos performances avec votre code affilié.</p><form id="affiliate-form" class="growth-form"><label>Code affilié<input name="code" required></label><label>Email du compte<input name="email" type="email" required></label><button>Afficher mes résultats</button><p class="growth-result" aria-live="polite"></p></form><div id="affiliate-result"></div><p class="growth-note">Pour protéger les commissions, l'accès complet nécessite l'activation de l'authentification affilié côté serveur.</p>`;$('#affiliate-form').addEventListener('submit',async e=>{e.preventDefault();const f=e.currentTarget,d=new FormData(f),m=$('.growth-result',f);m.textContent='';$('#affiliate-result').innerHTML='';m.textContent='La consultation sécurisée des commissions doit être activée avec l’Edge Function affilié avant d’afficher des montants.';});}
 async function adminSettings(){if(!$('.admin-body')||!$('#settings')||$('#growth-settings-card'))return;const parent=$('#settings .settings-grid-v12');if(!parent)return;const card=document.createElement('div');card.id='growth-settings-card';card.className='panel settings-card-v12';card.innerHTML=`<div class="settings-card-head"><div><h2>Social Media Links</h2><p>Configurez les liens officiels affichés dans le footer.</p></div><span class="settings-icon">W</span></div><form id="growth-settings-form" class="growth-admin-settings"><label>Instagram URL<input type="url" name="instagram_url" placeholder="https://www.instagram.com/votrecompte/" autocomplete="url"></label><label>TikTok URL<input type="url" name="tiktok_url" placeholder="https://www.tiktok.com/@votrecompte" autocomplete="url"></label><label>Numéro du bouton WhatsApp flottant<input type="tel" name="whatsapp_sticky_phone" placeholder="+212 618 175 188" autocomplete="tel" inputmode="tel"></label><label>Points avis photo approuvé<input type="number" min="0" max="100" name="loyalty_photo_review_points"></label><label><span>Activer le bundle</span><input type="checkbox" name="bundle_enabled"></label><button class="btn black" type="submit">SAVE SETTINGS</button><p class="growth-result" aria-live="polite"></p></form>`;parent.prepend(card);const f=$('#growth-settings-form');Object.keys(defaults).forEach(k=>{const el=f.elements[k];if(el){if(el.type==='checkbox')el.checked=!!settings[k];else el.value=settings[k]??defaults[k]}});f.addEventListener('submit',async e=>{e.preventDefault();const m=$('.growth-result',f);const instagram=String(f.elements.instagram_url.value||'').trim();const tiktok=String(f.elements.tiktok_url.value||'').trim();const whatsappPhone=normalizeMoroccanWhatsAppPhone(f.elements.whatsapp_sticky_phone.value);if(!whatsappPhone){m.textContent='Numéro WhatsApp invalide. Utilisez un numéro mobile marocain valide (06, 07, +2126 ou +2127).';f.elements.whatsapp_sticky_phone.focus();return}if(instagram&&!validSocialUrl(instagram,'instagram')){m.textContent='URL Instagram invalide. Utilisez une URL HTTPS officielle instagram.com.';f.elements.instagram_url.focus();return}if(tiktok&&!validSocialUrl(tiktok,'tiktok')){m.textContent='URL TikTok invalide. Utilisez une URL HTTPS officielle tiktok.com.';f.elements.tiktok_url.focus();return}const data={instagram_url:instagram,tiktok_url:tiktok,whatsapp_sticky_phone:whatsappPhone,loyalty_photo_review_points:Number(f.elements.loyalty_photo_review_points.value||0),bundle_enabled:f.elements.bundle_enabled.checked,updated_at:new Date().toISOString()};try{if(!sb())throw Error('Supabase indisponible');const {error}=await sb().from('wagwan_store_settings').upsert({id:1,...data},{onConflict:'id'});if(error)throw error;settings={...settings,...data};localStorage.setItem('wagwan_growth_settings',JSON.stringify(settings));m.textContent='Paramètres enregistrés.';renderSocial();renderStickyWhatsApp();renderThreshold()}catch(err){console.error('[WAGWAN Growth] Settings save failed:',err);m.textContent=err?.code==='42501'?'Accès refusé : reconnectez-vous avec un compte administrateur autorisé.':err?.code==='PGRST205'||err?.code==='42P01'?'Table Growth Pack introuvable : exécutez supabase/growth-pack-migration.sql.':`Enregistrement impossible : ${err?.message||'erreur Supabase inconnue'}`}})}
+
+function localDateTimeToIso(value,timezone){
+ if(!value)return null;
+ const parts=value.split(/[-T:]/).map(Number);if(parts.length<5||parts.some(n=>!Number.isFinite(n)))return null;
+ const [y,mo,d,h,mi]=parts;
+ const target=Date.UTC(y,mo-1,d,h,mi,0);
+ let guess=target;
+ for(let i=0;i<4;i++){
+  const fmt=new Intl.DateTimeFormat('en-CA',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});
+  const obj=Object.fromEntries(fmt.formatToParts(new Date(guess)).filter(x=>x.type!=='literal').map(x=>[x.type,Number(x.value)]));
+  const shown=Date.UTC(obj.year,obj.month-1,obj.day,obj.hour,obj.minute,obj.second);
+  guess+=target-shown;
+ }
+ return new Date(guess).toISOString();
+}
+function isoToLocalDateTime(value,timezone){
+ if(!value)return '';
+ const date=new Date(value);if(!Number.isFinite(date.getTime()))return '';
+ const f=new Intl.DateTimeFormat('en-CA',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
+ const x=Object.fromEntries(f.formatToParts(date).filter(p=>p.type!=='literal').map(p=>[p.type,p.value]));
+ return `${x.year}-${x.month}-${x.day}T${x.hour}:${x.minute}`;
+}
+function adminDropSettings(){
+ if(!$('.admin-body')||!$('#settings')||$('#drop-launch-settings-card'))return;
+ const parent=$('#settings .settings-grid-v12');if(!parent)return;
+ const card=document.createElement('div');card.id='drop-launch-settings-card';card.className='panel settings-card-v12';
+ card.innerHTML=`<div class="settings-card-head"><div><h2>Drop Launch Settings</h2><p>Planifiez le prochain drop et gérez les préinscriptions.</p></div><span class="settings-icon">D</span></div>
+ <form id="drop-launch-settings-form" class="growth-admin-settings">
+  <div class="settings-toggle-row"><div><b>Mode prochain drop</b><small>Masque la boutique publique et affiche la page d'inscription.</small></div><label class="switch"><input name="drop_mode_enabled" type="checkbox"><span></span></label></div>
+  <label>Drop name<input name="drop_name" maxlength="100" placeholder="DROP 002"></label>
+  <label>Drop date & time<input name="drop_launch_at" type="datetime-local"></label>
+  <label>Timezone<input name="drop_timezone" value="Africa/Casablanca" required placeholder="Africa/Casablanca"></label>
+  <div class="settings-toggle-row"><div><b>Registration status</b><small>Autoriser les visiteurs à s'inscrire à ce drop.</small></div><label class="switch"><input name="drop_registration_open" type="checkbox"><span></span></label></div>
+  <div class="settings-toggle-row"><div><b>Fermeture automatique</b><small>Fermer les inscriptions à l'heure du lancement.</small></div><label class="switch"><input name="drop_auto_close_registrations" type="checkbox"><span></span></label></div>
+  <button class="btn black" type="submit">SAVE DROP SETTINGS</button><p class="growth-result" id="drop-launch-settings-result" aria-live="polite"></p>
+ </form>`;
+ parent.prepend(card);
+ const f=$('#drop-launch-settings-form');
+ const fill=()=>{const x=f.elements; x.drop_mode_enabled.checked=!!settings.drop_mode_enabled;x.drop_name.value=settings.drop_name||'DROP 002';x.drop_timezone.value=settings.drop_timezone||'Africa/Casablanca';x.drop_launch_at.value=isoToLocalDateTime(settings.drop_launch_at,x.drop_timezone.value||'Africa/Casablanca');x.drop_registration_open.checked=settings.drop_registration_open!==false;x.drop_auto_close_registrations.checked=settings.drop_auto_close_registrations!==false;};
+ fill();
+ f.elements.drop_timezone.addEventListener('change',()=>{const old=f.elements.drop_launch_at.value; if(old)f.elements.drop_launch_at.value=old;});
+ f.addEventListener('submit',async e=>{
+  e.preventDefault();const btn=f.querySelector('button[type="submit"]'),msg=$('#drop-launch-settings-result'),x=f.elements;
+  const timezone=String(x.drop_timezone.value||'').trim(),launchISO=localDateTimeToIso(x.drop_launch_at.value,timezone),mode=!!x.drop_mode_enabled.checked;
+  const name=String(x.drop_name.value||'').trim()||settings.drop_name||'DROP 002';
+  msg.textContent='';
+  try{new Intl.DateTimeFormat('en-US',{timeZone:timezone});}catch{msg.textContent='Fuseau horaire invalide. Exemple : Africa/Casablanca.';return}
+  if(mode&&!launchISO){msg.textContent='Pour activer le mode prochain drop, renseignez sa date et son heure.';return}
+  if(!sb()) {msg.textContent='Supabase indisponible.';return}
+  btn.disabled=true;
+  try{
+   const autoClose=!!x.drop_auto_close_registrations.checked;
+   if(!launchISO&&!mode){
+    const cfg={id:1,drop_mode_enabled:false,drop_name:name,drop_launch_at:settings.drop_launch_at||null,drop_timezone:timezone,drop_registration_open:false,drop_auto_close_registrations:autoClose,active_drop_id:settings.active_drop_id||null,updated_at:new Date().toISOString()};
+    const {error}=await sb().from('wagwan_store_settings').upsert(cfg,{onConflict:'id'});if(error)throw error;
+    settings={...settings,...cfg};localStorage.setItem('wagwan_growth_settings',JSON.stringify(settings));msg.textContent='Mode prochain drop désactivé. La boutique normale sera affichée.';return;
+   }
+   let open=!!x.drop_registration_open.checked;
+   if(autoClose&&Date.now()>=new Date(launchISO).getTime())open=false;
+   let dropId=settings.active_drop_id||null,existing=null;
+   if(dropId){const r=await sb().from('wagwan_drops').select('*').eq('id',dropId).maybeSingle();if(r.error)throw r.error;existing=r.data;}
+   const changed=!existing||existing.name!==name||new Date(existing.launch_at).getTime()!==new Date(launchISO).getTime()||existing.timezone!==timezone;
+   let dropPayload={name,launch_at:launchISO,timezone,registration_open:open,auto_close_registrations:autoClose};
+   if(changed){const {data,error}=await sb().from('wagwan_drops').insert(dropPayload).select('id').single();if(error)throw error;dropId=data.id;}
+   else {const {error}=await sb().from('wagwan_drops').update(dropPayload).eq('id',dropId);if(error)throw error;}
+   const cfg={id:1,drop_mode_enabled:mode,drop_name:name,drop_launch_at:launchISO,drop_timezone:timezone,drop_registration_open:open,drop_auto_close_registrations:autoClose,active_drop_id:dropId,updated_at:new Date().toISOString()};
+   const {error}=await sb().from('wagwan_store_settings').upsert(cfg,{onConflict:'id'});if(error)throw error;
+   settings={...settings,...cfg};localStorage.setItem('wagwan_growth_settings',JSON.stringify(settings));
+   msg.textContent=changed&&existing?'Paramètres enregistrés. Nouveau drop créé ; les anciennes inscriptions sont conservées.':'Paramètres du drop enregistrés.';
+   await loadDropRegistrations();fill();
+  }catch(err){console.error('[WAGWAN Drop Settings]',err);msg.textContent='Enregistrement impossible : '+(err?.message||'erreur Supabase. Vérifiez la migration et la session administrateur.');}
+  finally{btn.disabled=false}
+ });
+}
+let dropRegisterTimer=null,dropRegisterChannel=null,dropRegisterBound=false,dropRegisterRows=[],dropRegisterDrops=[];
+async function refreshDropRegisterBadge(){
+ if(!sb())return;
+ try{const {count,error}=await sb().from('wagwan_drop_registrations').select('id',{count:'exact',head:true}).eq('is_read',false);if(error)throw error;const badge=$('#register-pending-badge');if(badge)badge.textContent=String(count||0)}catch(e){console.warn('[WAGWAN Register badge]',e)}
+}
+async function loadDropRegistrations(){
+ const body=$('#drop-register-rows');if(!body||!sb())return;
+ body.innerHTML='<tr><td colspan="5">Chargement…</td></tr>';
+ try{
+  const [rr,dd]=await Promise.all([
+   sb().from('wagwan_drop_registrations').select('*').order('created_at',{ascending:false}).limit(1000),
+   sb().from('wagwan_drops').select('id,name,launch_at').order('created_at',{ascending:false}).limit(200)
+  ]);
+  if(rr.error)throw rr.error;if(dd.error)throw dd.error;
+  dropRegisterRows=rr.data||[];dropRegisterDrops=dd.data||[];
+  const names=new Map(dropRegisterDrops.map(d=>[d.id,d.name]));
+  const filter=$('#drop-register-filter');if(filter){const prev=filter.value;filter.innerHTML='<option value="all">Tous les drops</option>'+dropRegisterDrops.map(d=>`<option value="${escape(d.id)}">${escape(d.name)}</option>`).join('');if([...filter.options].some(o=>o.value===prev))filter.value=prev;}
+  const total=$('#drop-register-total'),unread=$('#drop-register-unread');if(total)total.textContent=String(dropRegisterRows.length);if(unread)unread.textContent=String(dropRegisterRows.filter(r=>!r.is_read).length);
+  renderDropRegisterRows(names);
+  await refreshDropRegisterBadge();
+ }catch(e){body.innerHTML=`<tr><td colspan="5">Impossible de charger les inscriptions : ${escape(e.message||String(e))}. Vérifiez la migration Drop Launch.</td></tr>`;console.warn('[WAGWAN Register]',e)}
+}
+function renderDropRegisterRows(names){
+ const body=$('#drop-register-rows');if(!body)return;
+ const q=String($('#drop-register-search')?.value||'').trim().toLowerCase(),dropFilter=$('#drop-register-filter')?.value||'all';
+ const rows=dropRegisterRows.filter(r=>(dropFilter==='all'||r.drop_id===dropFilter)&&(!q||`${r.full_name} ${r.phone}`.toLowerCase().includes(q)));
+ if(!rows.length){body.innerHTML='<tr><td colspan="5" class="empty">Aucune inscription correspondante.</td></tr>';return}
+ body.innerHTML=rows.map(r=>`<tr><td><strong>${escape(r.full_name)}</strong>${r.is_read?'':' <span class="register-new-tag">NEW</span>'}</td><td>${escape(r.phone)}</td><td>${escape(names?.get(r.drop_id)||'Drop')}</td><td>${escape(new Intl.DateTimeFormat('fr-FR',{dateStyle:'medium',timeStyle:'short'}).format(new Date(r.created_at)))}</td><td><button class="feedback-action delete" type="button" title="Supprimer l'inscription" aria-label="Supprimer l'inscription" data-drop-registration-delete="${escape(r.id)}">⌫</button></td></tr>`).join('');
+ body.querySelectorAll('[data-drop-registration-delete]').forEach(btn=>btn.addEventListener('click',async()=>{if(!confirm('Supprimer définitivement cette inscription ?'))return;btn.disabled=true;try{const {error}=await sb().from('wagwan_drop_registrations').delete().eq('id',btn.dataset.dropRegistrationDelete);if(error)throw error;await loadDropRegistrations()}catch(e){alert('Suppression impossible : '+(e.message||'erreur Supabase'));btn.disabled=false}}));
+}
+async function markDropRegistrationsRead(){
+ if(!sb())return;
+ try{const {error}=await sb().from('wagwan_drop_registrations').update({is_read:true}).eq('is_read',false);if(error)throw error;dropRegisterRows=dropRegisterRows.map(r=>({...r,is_read:true}));await loadDropRegistrations()}catch(e){console.warn('[WAGWAN Register read status]',e)}
+}
+function initDropRegister(){
+ if(!$('.admin-body')||dropRegisterBound)return;dropRegisterBound=true;
+ $('#drop-register-refresh')?.addEventListener('click',loadDropRegistrations);
+ $('#drop-register-search')?.addEventListener('input',()=>renderDropRegisterRows(new Map(dropRegisterDrops.map(d=>[d.id,d.name]))));
+ $('#drop-register-filter')?.addEventListener('change',()=>renderDropRegisterRows(new Map(dropRegisterDrops.map(d=>[d.id,d.name]))));
+ const onHash=()=>{if(location.hash==='#register')markDropRegistrationsRead()};
+ window.addEventListener('hashchange',onHash);onHash();
+ loadDropRegistrations();
+ dropRegisterTimer=setInterval(()=>{if(document.visibilityState==='visible'){if(location.hash==='#register')loadDropRegistrations();else refreshDropRegisterBadge()}},30000);
+ window.addEventListener('pagehide',()=>{if(dropRegisterTimer)clearInterval(dropRegisterTimer);if(dropRegisterChannel&&sb())sb().removeChannel(dropRegisterChannel)},{once:true});
+ try{dropRegisterChannel=sb().channel('wagwan-register-realtime').on('postgres_changes',{event:'INSERT',schema:'public',table:'wagwan_drop_registrations'},()=>{refreshDropRegisterBadge();if(location.hash==='#register')loadDropRegistrations()}).subscribe()}catch(e){console.warn('[WAGWAN Register realtime unavailable; polling remains enabled]',e)}
+}
+
 function adminPhotoReviewQueue(){const admin=$('.admin-body');if(!admin||!$('#feedback')||$('#growth-photo-review-admin'))return;const panel=document.createElement('section');panel.id='growth-photo-review-admin';panel.className='panel feedback-admin-panel';panel.style.marginTop='22px';panel.innerHTML='<div class="panel-head"><div><h2>Partagez votre outfit</h2><span class="section-note">Modérez les photos avant publication. Les points ne sont attribués qu’après approbation.</span></div><button class="btn black" type="button" id="growth-photo-refresh">REFRESH</button></div><div class="table-wrap"><table><thead><tr><th>Client</th><th>Produit</th><th>Photo</th><th>Statut</th><th>Actions</th></tr></thead><tbody id="growth-photo-review-rows"><tr><td colspan="5">Loading…</td></tr></tbody></table></div>';$('#feedback').appendChild(panel);$('#growth-photo-refresh').addEventListener('click',loadPhotoReviews);loadPhotoReviews()}
 async function loadPhotoReviews(){const el=$('#growth-photo-review-rows');if(!el||!sb())return;try{const {data,error}=await sb().from('wagwan_photo_reviews').select('*').order('created_at',{ascending:false}).limit(100);if(error)throw error;if(!data?.length){el.innerHTML='<tr><td colspan="5">Aucune photo envoyée pour le moment.</td></tr>';return}el.innerHTML=data.map(x=>{const statusLabel=x.status==='approved'?'APPROVED':x.status==='rejected'?'REFUSED':'PENDING';const statusClass=x.status==='approved'?'approved':x.status==='rejected'?'rejected':'pending';return `<tr class="feedback-row" data-status="${escape(x.status)}"><td><strong>${escape(x.customer_name)}</strong><br><small>${escape(x.phone||'')}</small></td><td>${escape(x.product_name||x.product_id||'—')}</td><td><a class="growth-photo-thumb-link" href="${escape(x.photo_url)}" target="_blank" rel="noopener" title="Ouvrir la photo"><img class="growth-photo-thumb" src="${escape(x.photo_url)}" alt="Photo de ${escape(x.customer_name)}" loading="lazy" onerror="this.style.display='none';this.parentElement.textContent='Image indisponible'"></a></td><td><span class="feedback-status ${statusClass}">${statusLabel}</span>${x.points_awarded?'<small class="points-awarded-label">POINTS ATTRIBUÉS</small>':''}</td><td><div class="feedback-actions">${x.status==='pending'?`<button class="feedback-action approve" title="Approve" aria-label="Approve photo" onclick="window.wagwanModeratePhotoReview('${x.id}','approved')">✓</button><button class="feedback-action reject" title="Refuse" aria-label="Refuse photo" onclick="window.wagwanModeratePhotoReview('${x.id}','rejected')">×</button>`:''}<button class="feedback-action edit" title="Edit" aria-label="Edit photo review" onclick="window.wagwanEditPhotoReview('${x.id}')">✎</button><button class="feedback-action delete" title="Delete" aria-label="Delete photo review" onclick="window.wagwanDeletePhotoReview('${x.id}')">⌫</button></div></td></tr>`}).join('')}catch(e){el.innerHTML=`<tr><td colspan="5">Impossible de charger les photos : ${escape(e.message||String(e))}</td></tr>`;console.warn(e)}try{const {count}=await sb().from('wagwan_photo_reviews').select('id',{count:'exact',head:true}).eq('status','pending');const badge=$('#feedback-pending-badge');if(badge){const feedbackCount=Number(badge.dataset.feedbackCount ?? badge.textContent)||0;badge.textContent=String(feedbackCount+Number(count||0));badge.dataset.photoCount=String(count||0)}}catch(e){console.warn('[WAGWAN photo notifications]',e)}}
 window.wagwanModeratePhotoReview=async function(id,status){
@@ -78,6 +199,6 @@ async function checkSenditConnection(){const badge=$('#sendit-connection-status'
 function startSenditPolling(){if(senditPollTimer||!$('#sendit-connection-status'))return;checkSenditConnection();senditPollTimer=setInterval(()=>{if(document.visibilityState==='visible')checkSenditConnection()},45000)}
 function stopSenditPolling(){if(senditPollTimer){clearInterval(senditPollTimer);senditPollTimer=null}}
 function initSenditConnectionMonitor(){if(!$('.admin-body')||senditMonitorBound)return;senditMonitorBound=true;checkSenditConnection();const sync=()=>{if(location.hash==='#settings')startSenditPolling();else stopSenditPolling()};window.addEventListener('hashchange',sync);window.addEventListener('pagehide',stopSenditPolling,{once:true});document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&location.hash==='#settings')checkSenditConnection()});sync()}
-function init(){injectCommunityFixStyles();injectStyle();loadSettings().then(()=>{if(!$('.admin-body')){footerLinks();renderSocial();productUpsell();stockNotice();sizeWaitlist();renderThreshold();publicPhotoCarousel()}adminSettings();adminPhotoReviewQueue();initSenditConnectionMonitor();trackingPage();photoReviewPage();affiliatePage()});}
+function init(){injectCommunityFixStyles();injectStyle();loadSettings().then(()=>{if(!$('.admin-body')&&!settings.drop_mode_enabled){footerLinks();renderSocial();productUpsell();stockNotice();sizeWaitlist();renderThreshold();publicPhotoCarousel()}adminSettings();adminDropSettings();initDropRegister();adminPhotoReviewQueue();initSenditConnectionMonitor();trackingPage();photoReviewPage();affiliatePage()});}
 document.addEventListener('DOMContentLoaded',init);
 })();
